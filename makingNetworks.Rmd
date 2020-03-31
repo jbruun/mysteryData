@@ -9,11 +9,17 @@ output: github_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 ## Import data set
-```{r load-data, echo=F}
+```{r load-data, echo=T}
 mydata<-read.csv("data/data_spring2019.csv",sep=";")
-mydata$N<-c(1:length(mydata[,1]))
 mydata
 ```
+## Load necesseary functions
+```{r functions, echo=T}
+library(igraph)
+source("functions/backboneExtraction.r")
+source("functions/segregation.r")
+```
+
 ### Student similarity network
 
 ```{r make-networks, echo=T}
@@ -71,69 +77,56 @@ simMatrix<-function(d){
   }
   return(similarityMatrix)
 }
+
+
+```
+Now we use igraph to make the network
+```{r make-student-network}
+M<-simMatrix(mydata)
+StudNet<-graph.adjacency(M,diag=F,weighted=T)
+studid<-paste("S",c(1:length(mydata[,1])),sep="")
+V(StudNet)$id<-studid
+```
+As expected, the network is close to fully connected, $L=4804$, $L_{fc}=70*69=4830$. We use LANS (Foti et al 2011) to extract a backbone network. The algorithm evalueates the links emanating from each node and selects the ones above a certain threshold (below a certain significance level). As a rule of thumb, we might say that we want a connected network. So, we run the algorithm multiple times to find the significance level (that is each node keeps only links that are significant to the chosen level), which leaves us with a connected network. 
+```{r plot-student-network}
+
+StudNetbb05<-backboneNetwork(StudNet,0.05,2)
+plot(StudNetbb05)
+
+StudNetbb03<-backboneNetwork(StudNet,0.03,2)
+plot(StudNetbb03)
+
+StudNetbb02<-backboneNetwork(StudNet,0.02,2)
+plot(StudNetbb02)
+
+StudNetbb015<-backboneNetwork(StudNet,0.015,2)
+plot(StudNetbb015)
+
+StudNetbb015<-backboneNetwork(StudNet,0.014,2)
+plot(StudNetbb015)
+
+
 ```
 
-### Question similarity network
-```{r questions}
-probsQ<-function(mydata,n){
-  a<-as.numeric(names(table(as.numeric(mydata[n,1:24]))))
-  p<-table(as.numeric(mydata[n,1:24]))/24
-  x<-c(1:12)
-  for(i in 1:length(a)){
-    x[which(mydata[n,1:23]==a[i])]<-p[[i]]
-  }
-  return(x)
-}
-
-names(pre[1:12])
-pmatQ<-matrix(0,ncol=93,nrow=12)
-for(j in 1:93){
-  pmatQ[,j]<-probsQ(post,j)  
-  
-}
-infmatQ<--log2(pmatQ)
-md<-t(post[1:12])
-
-simResQ<-function(i,j){
-  y<-infmatQ[i,]
-  overlap<-sum(y[which(md[i,]==md[j,])]) 
-  sinfi<-sum(infmatQ[i,])
-  sinfj<-sum(infmatQ[j,])
-  sim<-2*overlap/(sinfi+sinfj)
-  return(sim)
-}
-
-simReskQ<-function(k){
-  simVec<-vector()
-  for(i in 1:12){
-    simVec[i]<-simResQ(k,i)
-  }
-  return(simVec)
-}
-
-simMatrixQ<-matrix(data=0,ncol=12,nrow=12)
-for(i in 1:12){
-  simMatrixQ[,i]<-simReskQ(i)  
-  
-}
+Now run community detection. I have been using infomap for a long time, but the implementation in igraph is maybe not the best. We would probably want a managable amount of communities with at enough people in each group to do some kind of statistical analysis. 
+```{r community-detection}
+IM<-infomap.community(StudNetbb015)
+IM
+table(IM$membership)
+FG<-fastgreedy.community(StudNetbb015)
+FG
+table(IM$membership)
 ```
-
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+Since FG and IM give the same modularity (Q) and FG has fewer modules, for this example, we keep that. Now, we can analyse the answers of each group. Here is a start:
+```{r response-analysis}
+mydata[FG$membership==1,]
+mydata[FG$membership==2,]
+mydata[FG$membership==3,]
+mydata[FG$membership==4,]
+mydata[FG$membership==5,]
+mydata[FG$membership==6,]
+mydata[FG$membership==7,]
 ```
+By analysing these tables, we can see, which answers seem to bind these groups together. This will vary from group to group. This first analysis could be furhter refined in many ways -- for example, one could find a criterion for selecting particular questions that are more suited for making clusters. 
 
-## Including Plots
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
