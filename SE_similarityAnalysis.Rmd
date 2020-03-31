@@ -1,0 +1,732 @@
+---
+title: "Similarity network analyses of self-efficacy attributes"
+author: "Jesper Bruun"
+date: "3/12/2020"
+output: github_document
+---
+
+```{r setup, include=FALSE, cache=T}
+knitr::opts_chunk$set(echo = TRUE)
+```
+This document is part of the supplement for:
+Bruun, J.; Evans, R.H. Network Analysis of Survey Data to Identify Non-Homogeneous Teacher Self-Efficacy Development in Using Formative Assessment Strategies. Educ. Sci. 2020, 10, 54. https://doi.org/10.3390/educsci10030054 
+
+It shows how to create similarity networks using our anonymised data and proceeds to show how we did the full analysis.
+
+## Loading libraries and functions
+
+```{r libraries_and_functions}
+library(igraph)
+library(PMCMRplus)
+library(pgirmess)
+library(effsize)
+#library(rcompanion)
+library(gplots)
+source("R_scripts/backboneExtraction.r")
+source("R_scripts/segregation.r")
+```
+
+## Load data and have a looksie
+The full data set consists of 93 respondents, 64 of whom participated in the project. The data contains responses from pre intervention and post intervention to 12 questions about attributes of self-efficacy. See Bruun & Evans (2020) for details. Background variables are
+
+* gender (however, the data is incomplete, so probably not very useful)
+* years of teaching categories (1= less than 4 years, 2 = 5-10 years, 3 = 11-20 years, 4 = more than 20 years)
+* local working group (LWG) number (the groups in which teachers worked during the intervention)
+* STEM subjects taught by teacher (1 if they teach the subject, 0 if they do not)
+
+```{r load-data, echo=F}
+mydata<-read.csv("Data/dataset.csv",sep=";")
+mydata$X<-c(1:length(mydata$Name))
+mydata
+```
+
+## Make respondent similarity networks
+### Define functions
+Here is the overall idea behind the functions:
+
+* Function 'pmat' replaces responses (here, 1, 2, 3, 4, 5 and NA) with the information content in that response. E.g. if half had answered 1 and half had answered 5 on Q38 the probability of drawing a 1 at ranom would be 0.5 and the information I = -log2(0.5) = 1. Then all entries in the column corresonding to Q38 would be 1. Function 'pmat' uses function 'probs'. 
+  + Function 'probs' calculates the frequency of each question response. Here, a 1 on Q38, for example, is different from a 1 on Q39 and so on.
+* Function 'simRes' calculates the similarity between two respondents. It uses Lin's (1998) information theoretical measure cited in Bruun & Evans (2020). The function uses both the actual responses and their information content as calculated by 'pmat'.
+  + Function 'simResk' calculates the similarity between one respondent and all other respondents.
+  + Function 'simMat' runs 'simResk' for all respondents
+
+```{r make-networks, echo=T}
+
+  #Function for calculating frequencies (here equated with probabilities) of responses
+probs<-function(mydata,n){
+  a<-as.numeric(names(table(mydata[,n])))
+  p<-as.numeric(table(mydata[,n],useNA = "always")/length(resp))
+  x<-c(1:length(resp))
+  for(i in 1:length(a)){
+    x[which(mydata[,n]==a[i])]<-p[i]
+  }
+  x[which(is.na(mydata[,n]))]<-p[6]
+  return(x)
+}
+
+#Function which transforms frequencies/probabilities to information (bits)
+pmat<-function(data){
+pmat<-matrix(0,ncol=length(data),nrow=length(data[,1]))
+for(j in 1:length(data)){
+  pmat[,j]<-probs(data,j)  
+  
+}
+infmat<--log2(pmat)
+return(infmat)
+}
+
+  #Function for calculating similarities between respondents
+  #The function uses Lin's (1998) information theoretical measure. 
+simRes<-function(i,j,infmat,d){
+  y<-infmat[i,]
+  overlap<-sum(y[which(d[i,1:12]==d[j,1:12])])
+  sinfi<-sum(infmat[i,])
+  sinfj<-sum(infmat[j,])
+  sim<-2*overlap/(sinfi+sinfj)
+  return(sim)
+}
+
+  #Function for calculating similarity between k'th respondent and everyone else
+simResk<-function(k,inf,d){
+    simVec<-vector()
+  for(i in 1:length(resp)){
+    simVec[i]<-simRes(k,i,inf,d)
+  }
+  return(simVec)
+}
+
+  #Function for making similarity matrix. Really just a for-loop that uses simResk 
+simMatrix<-function(d){
+  inf<-pmat(d)
+  similarityMatrix<-matrix(data=0,ncol=length(d[,1]),nrow=length(d[,1]))
+  for(i in 1:length(resp)){
+    similarityMatrix[,i]<-simResk(i,inf,d)  
+    
+  }
+  return(similarityMatrix)
+}
+```
+
+
+### Use functions to create networks
+Using the above fundtions, we make a pre intervention and a post intervention network for participating teacher. Then, we extract a backbone-version of those networks. The reasoning behind our use of backbone networks is:
+
+* We use local adaptive networks sparsification (LANS) by Foti et al (2011). This algorithm evaluates links locally, via a threshold p-like value, and per node, rather than employing a global rule. 
+* We set the threshold value to the minimum value that still preserves overall network connectivity. 
+* A link is preserved if it is significant (below threshold) for at least one node. 
+```{r making-networks}
+  #Name respondents
+resp<-paste("R",c(1:length(mydata$X)),sep="")   
+#Identify which columns contain pre and which contain post responses. 
+names(mydata[3:14]) #Columns for pre
+names(mydata[15:26]) #Columns for post
+post<-mydata[15:26] #Responses to post survey questions
+post[is.na(post)]<-100 #R does not like to perform calculations with NAs
+pre<-mydata[3:14] # We will compare pre community structure with post community structure
+pre[is.na(pre)]<-100
+
+ #Functions are now used to create a post similarity network
+postSim<-simMatrix(post)
+respTot<-resp
+respT<-resp[mydata$control=="n"]
+
+resp<-respT
+preSimT<-simMatrix(pre[mydata$control=="n",])
+postSimT<-simMatrix(post[mydata$control=="n",])
+
+preNetT<-graph.adjacency(preSimT,diag=F,weighted=T)
+postNetT<-graph.adjacency(postSimT,diag=F,weighted=T)
+V(preNetT)$id<-respT
+V(postNetT)$id<-respT
+
+#Extract backbone networks
+preNetBBT<-backboneNetwork(preNetT,0.0176,2) #Alpha value set to minimum value that keeps network connected
+postNetBBT<-backboneNetwork(postNetT,0.0335,2)# This is the network we focus on in the article.
+
+write.graph(postNetBBT,"postNetBBT.net",format=c("pajek"))
+write.graph(preNetBBT,"preNetBBT.net",format=c("pajek"))
+```
+
+For a simple comparison of raw and backbone post networks, the following code shows different representations of them
+
+* The stored igraph objects with information about type, number of links and nodes. 
+* The cumulative degree distributions; the frequency of nodes with k connections or below. 
+* A force-based plot with LWG-labels. 
+
+```{r plot-networks}
+postNetT
+plot(postNetT, main="Post Net",sub="Labels show LWG-number",vertex.label=mydata$LWG[mydata$control=='n'])
+plot(degree.distribution(postNetT,cumulative = T),log="xy", xlab="Degree, k",ylab="P(k>k')", main="Cumulative degree distribution")
+postNetBBT
+plot(postNetBBT, main="Post Net Backbone",sub="Labels show LWG-number",vertex.label=mydata$LWG[mydata$control=='n'])
+plot(degree.distribution(postNetBBT,cumulative = T),log="xy", xlab="Degree, k",ylab="P(k>k')", main="Cumulative degree distribution")
+```
+
+## Infomap clustering
+We used the version of infomap that can be downloaded from https://www.mapequation.org. Igraph also has a version of infomap installed, but we found that it was not as stable as the ones found on mapequation. Below we include the code we used to generate 1000 cluster solutions using a standard Mac terminal. 
+
+```
+Code for running infomap 100 times and placing the results in a specific folder:
+for i in {1..1000}; do ./pathToNetwork/[name].net /pathtoFolder/1000Infomaps[name]/
+--out-name $i -2 --clu --map -s$i; done
+```
+The Data-folder contains the results of this code and we use those results for the further analysis. Below we evaluate the internal consistency of cluster solutions for the pre intervention and post intervention networks. Also, we compare the most frequent pre solution to the most frequent post solution. 
+
+```{r infomap-clustering, echo=T}
+
+files<-vector()
+for (i in 1:1000){
+  files[i]<-paste("Data/1000InfomapsPreBBT/",i,".clu",sep = "")
+  
+}
+#Read in cluster solutions
+csvs<-lapply(files,read.csv,skip=2,header=F,sep="")
+
+a<-matrix(data=0,nrow=1000,ncol=64)
+for (i in 1:1000){
+  a[i,]<-csvs[[i]][ order(csvs[[i]][,1]),2 ]
+  
+}
+
+comp<-function(j){
+  nmi<-vector()
+  for(i in 1:1000){
+    nmi[i]<-compare(a[i,],a[j,],method="nmi")  
+    
+  }
+  return(nmi)  
+} 
+
+nmiM<-matrix(data=0,nrow=1000,ncol=1000)
+for(i in 1:1000){
+  nmiM[i,]<-comp(i)
+  
+}
+
+mean(nmiM) #Normalized mutual information of pre-cluster solutions
+sd(nmiM) #Standard deviation of NMI
+
+files<-vector()
+for (i in 1:1000){
+  files[i]<-paste("Data/1000InfomapsPostBBT/",i,".clu",sep = "")
+  
+}
+#setwd("..") #go to where the files are
+csvs<-lapply(files,read.csv,skip=2,header=F,sep="")
+
+a<-matrix(data=0,nrow=1000,ncol=64)
+for (i in 1:1000){
+  a[i,]<-csvs[[i]][ order(csvs[[i]][,1]),2 ]
+  
+}
+
+comp<-function(j){
+  nmi<-vector()
+  for(i in 1:1000){
+    nmi[i]<-compare(a[i,],a[j,],method="nmi")  
+    
+  }
+  return(nmi)  
+} 
+
+nmiM<-matrix(data=0,nrow=1000,ncol=1000)
+for(i in 1:1000){
+  nmiM[i,]<-comp(i)
+  
+}
+
+mean(nmiM)#Normalized mutual information of post-cluster solutions
+sd(nmiM)#Standard deviation of NMI
+
+#Compare pre to post groupings
+#Get most frequent groupings
+postBBTgroup<-read.csv("Data/1000InfomapsPostBBT/1.clu",skip=2,header=F,sep="") #for us it was the first grouping.
+postBBTgroup<-postBBTgroup[order(postBBTgroup$V1),]
+preBBTgroup<-read.csv("Data/1000InfomapsPreBBT/2.clu",skip=2,header=F,sep="") #for us it was the first grouping.
+preBBTgroup<-preBBTgroup[order(preBBTgroup$V1),]
+compare(preBBTgroup$V2,postBBTgroup$V2,method="nmi") 
+
+#Attach groupings to attributes data frame
+attributesT<-read.csv("Data/attributesT.csv")
+attributesT$preGroup<-preBBTgroup$V2
+attributesT$postGroup<-postBBTgroup$V2
+
+```
+## Find Optimal Super Group Solution
+
+
+```{r optimal-super-group, echo=F}
+supergroups<-vector(length = 64)
+supergroups[attributesT$postGroup==5|attributesT$postGroup==7|attributesT$postGroup==9|attributesT$postGroup==12]<-"A"
+supergroups[attributesT$postGroup==1|attributesT$postGroup==2|attributesT$postGroup==3|attributesT$postGroup==4]<-"B"
+supergroups[attributesT$postGroup==6|attributesT$postGroup==8|attributesT$postGroup==10|attributesT$postGroup==11]<-"C"
+supergroups<-as.factor(supergroups)
+modularity(postNetBBT,membership = supergroups)
+
+#0.4854486 Benchmark
+#0.4245728 PG6 -> B REJECTED
+#0.4532307 PG8 -> B R
+#0.4615967 PG10 -> B R
+#0.4676486 PG11 -> B R
+#0.4555447 PG6 -> A R
+#0.4900765 PG11 -> A ACCEPTED!
+
+supergroups<-vector(length = 64)
+supergroups[attributesT$postGroup==5|attributesT$postGroup==7|attributesT$postGroup==9|attributesT$postGroup==11|attributesT$postGroup==12]<-"A"
+supergroups[attributesT$postGroup==1|attributesT$postGroup==2|attributesT$postGroup==3]<-"B"
+supergroups[attributesT$postGroup==6|attributesT$postGroup==8|attributesT$postGroup==10|attributesT$postGroup==4]<-"C"
+supergroups<-as.factor(supergroups)
+modularity(postNetBBT,membership = supergroups)
+
+#0.4630206 PG6 -> A R
+#0.4392577 PG1 -> A R
+#0.4747686 PG1 -> C R
+#0.4766376 PG4 -> A R
+#0.5151299 PG4 -> C ACCEPTED!
+
+supergroups<-vector(length = 64)
+supergroups[attributesT$postGroup==5|attributesT$postGroup==7|attributesT$postGroup==9|attributesT$postGroup==11|attributesT$postGroup==12]<-"A"
+supergroups[attributesT$postGroup==1|attributesT$postGroup==2|attributesT$postGroup==3]<-"B"
+supergroups[attributesT$postGroup==6|attributesT$postGroup==8|attributesT$postGroup==10|attributesT$postGroup==4]<-"C"
+supergroups<-as.factor(supergroups)
+modularity(postNetBBT,membership = supergroups)
+
+#0.4856266 PG3 -> A R
+#0.5044945 PG3 -> C R
+#0.5115255 PG11 -> C R
+#0.4645336 PG7 -> C R
+#0.4676486 PG5 -> B R
+#0.4898985 PG2 -> C R
+#0.4854041 PG1 -> C R
+#0.4571022 PG1 -> A R
+#0.49733 PG6-> A R
+#0.4916785 PG11 -> B R
+#0.4741901 PG6 -> B R
+# 0.4645336 PG7 -> C R
+```
+
+
+## Describe optimal super group solution
+```{r describe-supergroup, echo=F}
+AdjMat<-get.adjacency(postNetBBT,attr = "weight",sparse = F,type = "upper")
+AdjMat[AdjMat==0]<-NA
+
+N<-table(supergroups)
+N_int<-c(length(which(!is.na(AdjMat[supergroups=="A",supergroups=="A"]))),
+         length(which(!is.na(AdjMat[supergroups=="B",supergroups=="B"]))),
+         length(which(!is.na(AdjMat[supergroups=="C",supergroups=="C"]))))
+
+mean_int<-c(mean(AdjMat[supergroups=="A",supergroups=="A"],na.rm=T),
+mean(AdjMat[supergroups=="B",supergroups=="B"],na.rm=T),
+mean(AdjMat[supergroups=="C",supergroups=="C"],na.rm=T))
+
+sd_int<-c(sd(AdjMat[supergroups=="A",supergroups=="A"],na.rm=T),
+  sd(AdjMat[supergroups=="B",supergroups=="B"],na.rm=T),
+  sd(AdjMat[supergroups=="C",supergroups=="C"],na.rm=T))
+
+N_ext<-c(length(which(!is.na(AdjMat[supergroups=="A",supergroups!="A"]))),
+         length(which(!is.na(AdjMat[supergroups=="B",supergroups!="B"]))),
+         length(which(!is.na(AdjMat[supergroups=="C",supergroups!="C"]))))
+
+mean_ext<-c(mean(AdjMat[supergroups=="A",supergroups!="A"],na.rm=T),
+  mean(AdjMat[supergroups=="B",supergroups!="B"],na.rm=T),
+  mean(AdjMat[supergroups=="C",supergroups!="C"],na.rm=T))
+
+sd_ext<-c(sd(AdjMat[supergroups=="A",supergroups!="A"],na.rm=T),
+  sd(AdjMat[supergroups=="B",supergroups!="B"],na.rm=T),
+  sd(AdjMat[supergroups=="C",supergroups!="C"],na.rm=T))
+
+
+
+allInt<-c(as.vector(AdjMat[supergroups=="A",supergroups=="A"]),
+  as.vector(AdjMat[supergroups=="B",supergroups=="B"]), 
+  as.vector(AdjMat[supergroups=="C",supergroups=="C"]))
+allInt<-allInt[!is.na(allInt)]
+N_int<-c(N_int,length(allInt))
+mean_int<-c(mean_int,mean(allInt))
+sd_int<-c(sd_int,sd(allInt))
+
+allExt<-c(as.vector(AdjMat[supergroups=="A",supergroups!="A"]),
+          as.vector(AdjMat[supergroups=="B",supergroups!="B"]), 
+          as.vector(AdjMat[supergroups=="C",supergroups!="C"]))
+allExt<-allExt[!is.na(allExt)]
+N_ext<-c(N_ext,length(allExt))
+mean_ext<-c(mean_ext,mean(allExt))
+sd_ext<-c(sd_ext,sd(allExt))
+
+DescribeSuperGroups<-data.frame(row.names=c("A","B","C","Total"),N_teachers=c(as.numeric(N),sum(as.numeric(N))),
+                                N_internal=N_int,Mean_internal=mean_int,SD_internal=sd_int,
+                                N_external=N_ext,Mean_external=mean_ext,SD_external=sd_ext)
+DescribeSuperGroups
+wilcox.test(allInt,allExt)
+t.test(allInt,allExt)
+```
+
+
+## Characterise Super Groups
+```{r characterise-super-groups, echo=F}
+##CHARACTERISE SUPERGROUPS
+newdata<-mydata[mydata$control=="n",]
+#load supergroups
+respT<-newdata[15:26]
+respT[is.na(respT)]<-0
+respTpre<-newdata[3:14]
+respTpre[is.na(respTpre)]<-0
+anMat<-function(data,memb,letter){
+  sgax<-matrix(0,nrow=12,ncol=7)
+  sgax[,1]<-c(38:49)
+  N<-length(which(memb==letter))
+  colnames(sgax)<-c("Q","1 - Disagree",2:4,"5 - Agree", "NA")
+  sgax[1,2]<-length(which(respT[memb==letter,]$post38==1))/N
+  sgax[1,3]<-length(which(respT[memb==letter,]$post38==2))/N
+  sgax[1,4]<-length(which(respT[memb==letter,]$post38==3))/N
+  sgax[1,5]<-length(which(respT[memb==letter,]$post38==4))/N
+  sgax[1,6]<-length(which(respT[memb==letter,]$post38==5))/N
+  sgax[1,7]<-length(which(respT[memb==letter,]$post38==0))/N
+  
+  sgax[2,2]<-length(which(respT[memb==letter,]$post39==1))/N
+  sgax[2,3]<-length(which(respT[memb==letter,]$post39==2))/N
+  sgax[2,4]<-length(which(respT[memb==letter,]$post39==3))/N
+  sgax[2,5]<-length(which(respT[memb==letter,]$post39==4))/N
+  sgax[2,6]<-length(which(respT[memb==letter,]$post39==5))/N
+  sgax[2,7]<-length(which(respT[memb==letter,]$post39==0))/N
+  
+  sgax[3,2]<-length(which(respT[memb==letter,]$post40==1))/N
+  sgax[3,3]<-length(which(respT[memb==letter,]$post40==2))/N
+  sgax[3,4]<-length(which(respT[memb==letter,]$post40==3))/N
+  sgax[3,5]<-length(which(respT[memb==letter,]$post40==4))/N
+  sgax[3,6]<-length(which(respT[memb==letter,]$post40==5))/N
+  sgax[3,7]<-length(which(respT[memb==letter,]$post40==0))/N
+  
+  sgax[4,2]<-length(which(respT[memb==letter,]$post41==1))/N
+  sgax[4,3]<-length(which(respT[memb==letter,]$post41==2))/N
+  sgax[4,4]<-length(which(respT[memb==letter,]$post41==3))/N
+  sgax[4,5]<-length(which(respT[memb==letter,]$post41==4))/N
+  sgax[4,6]<-length(which(respT[memb==letter,]$post41==5))/N
+  sgax[4,7]<-length(which(respT[memb==letter,]$post41==0))/N
+  
+  sgax[5,2]<-length(which(respT[memb==letter,]$post42==1))/N
+  sgax[5,3]<-length(which(respT[memb==letter,]$post42==2))/N
+  sgax[5,4]<-length(which(respT[memb==letter,]$post42==3))/N
+  sgax[5,5]<-length(which(respT[memb==letter,]$post42==4))/N
+  sgax[5,6]<-length(which(respT[memb==letter,]$post42==5))/N
+  sgax[5,7]<-length(which(respT[memb==letter,]$post42==0))/N
+  
+  sgax[6,2]<-length(which(respT[memb==letter,]$post43==1))/N
+  sgax[6,3]<-length(which(respT[memb==letter,]$post43==2))/N
+  sgax[6,4]<-length(which(respT[memb==letter,]$post43==3))/N
+  sgax[6,5]<-length(which(respT[memb==letter,]$post43==4))/N
+  sgax[6,6]<-length(which(respT[memb==letter,]$post43==5))/N
+  sgax[6,7]<-length(which(respT[memb==letter,]$post43==0))/N
+  
+  sgax[7,2]<-length(which(respT[memb==letter,]$post44==1))/N
+  sgax[7,3]<-length(which(respT[memb==letter,]$post44==2))/N
+  sgax[7,4]<-length(which(respT[memb==letter,]$post44==3))/N
+  sgax[7,5]<-length(which(respT[memb==letter,]$post44==4))/N
+  sgax[7,6]<-length(which(respT[memb==letter,]$post44==5))/N
+  sgax[7,7]<-length(which(respT[memb==letter,]$post44==0))/N
+  
+  sgax[8,2]<-length(which(respT[memb==letter,]$post45==1))/N
+  sgax[8,3]<-length(which(respT[memb==letter,]$post45==2))/N
+  sgax[8,4]<-length(which(respT[memb==letter,]$post45==3))/N
+  sgax[8,5]<-length(which(respT[memb==letter,]$post45==4))/N
+  sgax[8,6]<-length(which(respT[memb==letter,]$post45==5))/N
+  sgax[8,7]<-length(which(respT[memb==letter,]$post45==0))/N
+  
+  sgax[9,2]<-length(which(respT[memb==letter,]$post46==1))/N
+  sgax[9,3]<-length(which(respT[memb==letter,]$post46==2))/N
+  sgax[9,4]<-length(which(respT[memb==letter,]$post46==3))/N
+  sgax[9,5]<-length(which(respT[memb==letter,]$post46==4))/N
+  sgax[9,6]<-length(which(respT[memb==letter,]$post46==5))/N
+  sgax[9,7]<-length(which(respT[memb==letter,]$post46==0))/N
+  
+  sgax[10,2]<-length(which(respT[memb==letter,]$post47==1))/N
+  sgax[10,3]<-length(which(respT[memb==letter,]$post47==2))/N
+  sgax[10,4]<-length(which(respT[memb==letter,]$post47==3))/N
+  sgax[10,5]<-length(which(respT[memb==letter,]$post47==4))/N
+  sgax[10,6]<-length(which(respT[memb==letter,]$post47==5))/N
+  sgax[10,7]<-length(which(respT[memb==letter,]$post47==0))/N
+  
+  sgax[11,2]<-length(which(respT[memb==letter,]$post48==1))/N
+  sgax[11,3]<-length(which(respT[memb==letter,]$post48==2))/N
+  sgax[11,4]<-length(which(respT[memb==letter,]$post48==3))/N
+  sgax[11,5]<-length(which(respT[memb==letter,]$post48==4))/N
+  sgax[11,6]<-length(which(respT[memb==letter,]$post48==5))/N
+  sgax[11,7]<-length(which(respT[memb==letter,]$post48==0))/N
+  
+  sgax[12,2]<-length(which(respT[memb==letter,]$post49==1))/N
+  sgax[12,3]<-length(which(respT[memb==letter,]$post49==2))/N
+  sgax[12,4]<-length(which(respT[memb==letter,]$post49==3))/N
+  sgax[12,5]<-length(which(respT[memb==letter,]$post49==4))/N
+  sgax[12,6]<-length(which(respT[memb==letter,]$post49==5))/N
+  sgax[12,7]<-length(which(respT[memb==letter,]$post49==0))/N
+  return(sgax)
+}
+
+anMatPre<-function(data,memb,letter){
+  sgax<-matrix(0,nrow=12,ncol=7)
+  sgax[,1]<-c(38:49)
+  N<-length(which(memb==letter))
+  colnames(sgax)<-c("Q","1 - Disagree",2:4,"5 - Agree", "NA")
+  sgax[1,2]<-length(which(data[memb==letter,]$pre38==1))/N
+  sgax[1,3]<-length(which(data[memb==letter,]$pre38==2))/N
+  sgax[1,4]<-length(which(data[memb==letter,]$pre38==3))/N
+  sgax[1,5]<-length(which(data[memb==letter,]$pre38==4))/N
+  sgax[1,6]<-length(which(data[memb==letter,]$pre38==5))/N
+  sgax[1,7]<-length(which(data[memb==letter,]$pre38==0))/N
+  
+  sgax[2,2]<-length(which(data[memb==letter,]$pre39==1))/N
+  sgax[2,3]<-length(which(data[memb==letter,]$pre39==2))/N
+  sgax[2,4]<-length(which(data[memb==letter,]$pre39==3))/N
+  sgax[2,5]<-length(which(data[memb==letter,]$pre39==4))/N
+  sgax[2,6]<-length(which(data[memb==letter,]$pre39==5))/N
+  sgax[2,7]<-length(which(data[memb==letter,]$pre39==0))/N
+  
+  sgax[3,2]<-length(which(data[memb==letter,]$pre40==1))/N
+  sgax[3,3]<-length(which(data[memb==letter,]$pre40==2))/N
+  sgax[3,4]<-length(which(data[memb==letter,]$pre40==3))/N
+  sgax[3,5]<-length(which(data[memb==letter,]$pre40==4))/N
+  sgax[3,6]<-length(which(data[memb==letter,]$pre40==5))/N
+  sgax[3,7]<-length(which(data[memb==letter,]$pre40==0))/N
+  
+  sgax[4,2]<-length(which(data[memb==letter,]$pre41==1))/N
+  sgax[4,3]<-length(which(data[memb==letter,]$pre41==2))/N
+  sgax[4,4]<-length(which(data[memb==letter,]$pre41==3))/N
+  sgax[4,5]<-length(which(data[memb==letter,]$pre41==4))/N
+  sgax[4,6]<-length(which(data[memb==letter,]$pre41==5))/N
+  sgax[4,7]<-length(which(data[memb==letter,]$pre41==0))/N
+  
+  sgax[5,2]<-length(which(data[memb==letter,]$pre42==1))/N
+  sgax[5,3]<-length(which(data[memb==letter,]$pre42==2))/N
+  sgax[5,4]<-length(which(data[memb==letter,]$pre42==3))/N
+  sgax[5,5]<-length(which(data[memb==letter,]$pre42==4))/N
+  sgax[5,6]<-length(which(data[memb==letter,]$pre42==5))/N
+  sgax[5,7]<-length(which(data[memb==letter,]$pre42==0))/N
+  
+  sgax[6,2]<-length(which(data[memb==letter,]$pre43==1))/N
+  sgax[6,3]<-length(which(data[memb==letter,]$pre43==2))/N
+  sgax[6,4]<-length(which(data[memb==letter,]$pre43==3))/N
+  sgax[6,5]<-length(which(data[memb==letter,]$pre43==4))/N
+  sgax[6,6]<-length(which(data[memb==letter,]$pre43==5))/N
+  sgax[6,7]<-length(which(data[memb==letter,]$pre43==0))/N
+  
+  sgax[7,2]<-length(which(data[memb==letter,]$pre44==1))/N
+  sgax[7,3]<-length(which(data[memb==letter,]$pre44==2))/N
+  sgax[7,4]<-length(which(data[memb==letter,]$pre44==3))/N
+  sgax[7,5]<-length(which(data[memb==letter,]$pre44==4))/N
+  sgax[7,6]<-length(which(data[memb==letter,]$pre44==5))/N
+  sgax[7,7]<-length(which(data[memb==letter,]$pre44==0))/N
+  
+  sgax[8,2]<-length(which(data[memb==letter,]$pre45==1))/N
+  sgax[8,3]<-length(which(data[memb==letter,]$pre45==2))/N
+  sgax[8,4]<-length(which(data[memb==letter,]$pre45==3))/N
+  sgax[8,5]<-length(which(data[memb==letter,]$pre45==4))/N
+  sgax[8,6]<-length(which(data[memb==letter,]$pre45==5))/N
+  sgax[8,7]<-length(which(data[memb==letter,]$pre45==0))/N
+  
+  sgax[9,2]<-length(which(data[memb==letter,]$pre46==1))/N
+  sgax[9,3]<-length(which(data[memb==letter,]$pre46==2))/N
+  sgax[9,4]<-length(which(data[memb==letter,]$pre46==3))/N
+  sgax[9,5]<-length(which(data[memb==letter,]$pre46==4))/N
+  sgax[9,6]<-length(which(data[memb==letter,]$pre46==5))/N
+  sgax[9,7]<-length(which(data[memb==letter,]$pre46==0))/N
+  
+  sgax[10,2]<-length(which(data[memb==letter,]$pre47==1))/N
+  sgax[10,3]<-length(which(data[memb==letter,]$pre47==2))/N
+  sgax[10,4]<-length(which(data[memb==letter,]$pre47==3))/N
+  sgax[10,5]<-length(which(data[memb==letter,]$pre47==4))/N
+  sgax[10,6]<-length(which(data[memb==letter,]$pre47==5))/N
+  sgax[10,7]<-length(which(data[memb==letter,]$pre47==0))/N
+  
+  sgax[11,2]<-length(which(data[memb==letter,]$pre48==1))/N
+  sgax[11,3]<-length(which(data[memb==letter,]$pre48==2))/N
+  sgax[11,4]<-length(which(data[memb==letter,]$pre48==3))/N
+  sgax[11,5]<-length(which(data[memb==letter,]$pre48==4))/N
+  sgax[11,6]<-length(which(data[memb==letter,]$pre48==5))/N
+  sgax[11,7]<-length(which(data[memb==letter,]$pre48==0))/N
+  
+  sgax[12,2]<-length(which(data[memb==letter,]$pre49==1))/N
+  sgax[12,3]<-length(which(data[memb==letter,]$pre49==2))/N
+  sgax[12,4]<-length(which(data[memb==letter,]$pre49==3))/N
+  sgax[12,5]<-length(which(data[memb==letter,]$pre49==4))/N
+  sgax[12,6]<-length(which(data[memb==letter,]$pre49==5))/N
+  sgax[12,7]<-length(which(data[memb==letter,]$pre49==0))/N
+  return(sgax)
+}
+
+##############SUPERGROUP PRE POST ANSWERS AND DIFFERENCES#######################################
+sgAPre<-anMatPre(respTpre,supergroups,"A")
+sgAPost<-anMat(respT,supergroups,"A")
+sgADiff<-sgAPost-sgAPre
+sgBPre<-anMatPre(respTpre,supergroups,"B")
+sgBPost<-anMat(respT,supergroups,"B")
+sgBDiff<-sgBPost-sgBPre
+sgCPre<-anMatPre(respTpre,supergroups,"C")
+sgCPost<-anMat(respT,supergroups,"C")
+sgCDiff<-sgCPost-sgCPre
+
+
+
+
+par(mfrow=c(3,2))
+barplot(rbind(sgAPost[1,2:7],sgBPost[1,2:7],sgCPost[1,2:7]),beside=T,main="Q38: Find better ways to teach using FA",xlab="Teacher response",ylab="Frequency",legend=c("A","B","C"))
+barplot(rbind(sgAPost[2,2:7],sgBPost[2,2:7],sgCPost[2,2:7]),beside=T,main="Q39R: Not difficult to integrate FA ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[3,2:7],sgBPost[3,2:7],sgCPost[3,2:7]),beside=T,main="Q40: Know necessary steps",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[4,2:7],sgBPost[4,2:7],sgCPost[4,2:7]),beside=T,main="Q41R: Effective in monitoring student work",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[5,2:7],sgBPost[5,2:7],sgCPost[5,2:7]),beside=T,main="Q42R: Teaching will be effective ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[6,2:7],sgBPost[6,2:7],sgCPost[6,2:7]),beside=T,main="Q43: Student background can be overcome",xlab="Teacher response",ylab="Frequency")
+par(mfrow=c(3,2))
+barplot(rbind(sgAPost[7,2:7],sgBPost[7,2:7],sgCPost[7,2:7]),beside=T,main="Q44: Low-achieving student progress due to FA",xlab="Teacher response",ylab="Frequency",legend=c("A","B","C"))
+barplot(rbind(sgAPost[8,2:7],sgBPost[8,2:7],sgCPost[8,2:7]),beside=T,main="Q45: Understand FA enough to be effective ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[9,2:7],sgBPost[9,2:7],sgCPost[9,2:7]),beside=T,main="Q46R: Increased effort leads to change ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[10,2:7],sgBPost[10,2:7],sgCPost[10,2:7]),beside=T,main="Q47R: Not difficult to explain content ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[11,2:7],sgBPost[11,2:7],sgCPost[11,2:7]),beside=T,main="Q48: Able to answer student questions",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[12,2:7],sgBPost[12,2:7],sgCPost[12,2:7]),beside=T,main="Q49R: Do not wonder necessary skills",xlab="Teacher response",ylab="Frequency")
+
+#PRE
+par(mfrow=c(3,2))
+barplot(rbind(sgAPre[1,2:7],sgBPre[1,2:7],sgCPre[1,2:7]),beside=T,main="Q38: Find better ways to teach using FA",xlab="Teacher response",ylab="Frequency",legend=c("A","B","C"))
+barplot(rbind(sgAPre[2,2:7],sgBPre[2,2:7],sgCPre[2,2:7]),beside=T,main="Q39R: Not difficult to integrate FA ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPre[3,2:7],sgBPre[3,2:7],sgCPre[3,2:7]),beside=T,main="Q40: Know necessary steps",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPre[4,2:7],sgBPre[4,2:7],sgCPre[4,2:7]),beside=T,main="Q41R: Effective in monitoring student work",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPre[5,2:7],sgBPre[5,2:7],sgCPre[5,2:7]),beside=T,main="Q42R: Teaching will be effective ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPre[6,2:7],sgBPre[6,2:7],sgCPre[6,2:7]),beside=T,main="Q43: Student background can be overcome",xlab="Teacher response",ylab="Frequency")
+par(mfrow=c(3,2))
+barplot(rbind(sgAPre[7,2:7],sgBPre[7,2:7],sgCPre[7,2:7]),beside=T,main="Q44: Low-achieving student progress due to FA",xlab="Teacher response",ylab="Frequency",legend=c("A","B","C"))
+barplot(rbind(sgAPre[8,2:7],sgBPre[8,2:7],sgCPre[8,2:7]),beside=T,main="Q45: Understand FA enough to be effective ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPre[9,2:7],sgBPre[9,2:7],sgCPre[9,2:7]),beside=T,main="Q46R: Increased effort leads to change ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPre[10,2:7],sgBPre[10,2:7],sgCPre[10,2:7]),beside=T,main="Q47R: Not difficult to explain content ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPre[11,2:7],sgBPre[11,2:7],sgCPre[11,2:7]),beside=T,main="Q48: Able to answer student questions",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPre[12,2:7],sgBPre[12,2:7],sgCPre[12,2:7]),beside=T,main="Q49R: Do not wonder necessary skills",xlab="Teacher response",ylab="Frequency")
+
+#Differences between post and pre. 
+par(mfrow=c(3,2))
+barplot(rbind(sgADiff[1,2:7],sgBDiff[1,2:7],sgCDiff[1,2:7]),beside=T,main="Q38: Find better ways to teach using FA",xlab="Teacher response",ylab="Frequency",legend=c("A","B","C"))
+barplot(rbind(sgADiff[2,2:7],sgBDiff[2,2:7],sgCDiff[2,2:7]),beside=T,main="Q39R: Not difficult to integrate FA ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[3,2:7],sgBDiff[3,2:7],sgCDiff[3,2:7]),beside=T,main="Q40: Know necessary steps",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[4,2:7],sgBDiff[4,2:7],sgCDiff[4,2:7]),beside=T,main="Q41R: Effective in monitoring student work",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[5,2:7],sgBDiff[5,2:7],sgCDiff[5,2:7]),beside=T,main="Q42R: Teaching will be effective ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[6,2:7],sgBDiff[6,2:7],sgCDiff[6,2:7]),beside=T,main="Q43: Student background can be overcome",xlab="Teacher response",ylab="Frequency")
+par(mfrow=c(3,2))
+barplot(rbind(sgADiff[7,2:7],sgBDiff[7,2:7],sgCDiff[7,2:7]),beside=T,main="Q44: Low-achieving student progress due to FA",xlab="Teacher response",ylab="Frequency",legend=c("A","B","C"))
+barplot(rbind(sgADiff[8,2:7],sgBDiff[8,2:7],sgCDiff[8,2:7]),beside=T,main="Q45: Understand FA enough to be effective ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[9,2:7],sgBDiff[9,2:7],sgCDiff[9,2:7]),beside=T,main="Q46R: Increased effort leads to change ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[10,2:7],sgBDiff[10,2:7],sgCDiff[10,2:7]),beside=T,main="Q47R: Not difficult to explain content ",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[11,2:7],sgBDiff[11,2:7],sgCDiff[11,2:7]),beside=T,main="Q48: Able to answer student questions",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[12,2:7],sgBDiff[12,2:7],sgCDiff[12,2:7]),beside=T,main="Q49R: Do not wonder necessary skills",xlab="Teacher response",ylab="Frequency")
+
+###############
+
+```
+
+## Kruskal-Wallis and Nemenyi tests
+
+```{r kruskal-wallis-nemenyi, echo=F}
+ans38 <- kwAllPairsNemenyiTest(newdata$post38 ~ supergroups, dist="Chisquare")
+summary(ans38)
+ans39 <- kwAllPairsNemenyiTest(newdata$post39 ~ supergroups, dist="Chisquare")
+summary(ans39)
+ans40 <- kwAllPairsNemenyiTest(newdata$post40 ~ supergroups, dist="Chisquare")
+summary(ans40)
+ans41 <- kwAllPairsNemenyiTest(newdata$post41 ~ supergroups, dist="Chisquare")
+summary(ans41)
+ans42 <- kwAllPairsNemenyiTest(newdata$post42 ~ supergroups, dist="Chisquare")
+summary(ans42)
+ans43 <- kwAllPairsNemenyiTest(newdata$post43 ~ supergroups, dist="Chisquare")
+summary(ans43)
+
+ans44 <- kwAllPairsNemenyiTest(newdata$post44 ~ supergroups, dist="Chisquare")
+summary(ans44)
+ans45 <- kwAllPairsNemenyiTest(newdata$post45 ~ supergroups, dist="Chisquare")
+summary(ans45)
+ans46 <- kwAllPairsNemenyiTest(newdata$post46 ~ supergroups, dist="Chisquare")
+summary(ans46)
+ans47 <- kwAllPairsNemenyiTest(newdata$post47 ~ supergroups, dist="Chisquare")
+summary(ans47)
+ans48 <- kwAllPairsNemenyiTest(newdata$post48 ~ supergroups, dist="Chisquare")
+summary(ans48)
+ans49 <- kwAllPairsNemenyiTest(newdata$post49 ~ supergroups, dist="Chisquare")
+summary(ans49)
+```
+## Segregation analysis
+```{r segregation-analysis, echo=F}
+LWG<-mydata$LWG[mydata$control=="n"]
+resampleX(as.numeric(supergroups),LWG,2,1000)
+resampleX(as.numeric(supergroups),attributesT$yearsTeaching,2,1000)
+resampleX(as.numeric(supergroups),attributesT$physics,2,1000)
+resampleX(as.numeric(supergroups),attributesT$chemistry,2,1000)
+resampleX(as.numeric(supergroups),attributesT$technology,2,1000)
+resampleX(as.numeric(supergroups),attributesT$biology,2,1000)
+resampleX(as.numeric(supergroups),attributesT$integrated,2,1000)
+resampleX(as.numeric(supergroups),attributesT$mathematics,2,1000)
+resampleX(as.numeric(supergroups),attributesT$subjects,2,1000)
+resampleX(as.numeric(supergroups),attributesT$preGroup,2,1000)
+resampleX(as.numeric(supergroups),attributesT$postGroup,2,1000)
+```
+
+## Entropy analysis
+This is the entropy analysis.
+
+```{r entropy-analysis, echo=F}
+Sa<-vector()
+for(i in 1:12){
+  Sa[i]<--sum(sgAPost[i,2:7]*log2(sgAPost[i,2:7]),na.rm=T)
+  
+}
+
+Sb<-vector()
+for(i in 1:12){
+  Sb[i]<--sum(sgBPost[i,2:7]*log2(sgBPost[i,2:7]),na.rm=T)
+  
+}
+
+Sc<-vector()
+for(i in 1:12){
+  Sc[i]<--sum(sgCPost[i,2:7]*log2(sgCPost[i,2:7]),na.rm=T)
+  
+}
+
+Smax<--log2(1/6)
+
+
+plot(Sa/Smax,ylim=c(0,1), pch="A", ylab="S/Smax", xlab="Question", xaxt="n", main="Entropy of distributions")
+axis(1, at=c(1:12), labels=c("Q38", "Q39", "Q40", "Q41", "Q42", "Q43", "Q44", "Q45", "Q46", "Q47", "Q48", "Q49"))
+points(Sb/Smax,pch="B",col="blue")
+points(Sc/Smax,pch="C",col="red")
+
+```
+
+## Single question analyses
+This is the single questions analyses.
+```{r single-question-analysis, echo=F}
+shifts<-c(as.numeric(sgADiff),as.numeric(sgBDiff),as.numeric(sgCDiff))
+hist(shifts)
+qqnorm(shifts)
+par(mfrow=c(3,2))
+barplot(rbind(sgAPre[3,2:7],sgBPre[3,2:7],sgCPre[3,2:7]),beside=T,main="Q40: Pre Intervention",xlab="Teacher response",ylab="Frequency",legend=c("A","B","C"))
+barplot(rbind(sgAPre[12,2:7],sgBPre[12,2:7],sgCPre[12,2:7]),beside=T,main="Q49R: Pre Intervention",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[3,2:7],sgBPost[3,2:7],sgCPost[3,2:7]),beside=T,main="Q40: Post Intervention",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[12,2:7],sgBPost[12,2:7],sgCPost[12,2:7]),beside=T,main="Q49R: Post Intervention",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[3,2:7],sgBDiff[3,2:7],sgCDiff[3,2:7]),beside=T,main="Q40: Pre to post difference",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[12,2:7],sgBDiff[12,2:7],sgCDiff[12,2:7]),beside=T,main="Q49R: Pre to post difference", xlab="Teacher response",ylab="Frequency")
+
+
+sgADiff[3,5]/sd(shifts)
+sgBDiff[3,5]/sd(shifts)
+sgCDiff[3,4]/sd(shifts)
+sgBDiff[3,4]/sd(shifts)
+
+barplot(rbind(sgAPre[5,2:7],sgBPre[5,2:7],sgCPre[5,2:7]),beside=T,main="Q42: Pre Intervention",xlab="Teacher response",ylab="Frequency",legend=c("A","B","C"))
+barplot(rbind(sgAPre[9,2:7],sgBPre[9,2:7],sgCPre[9,2:7]),beside=T,main="Q46R*: Pre Intervention",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[5,2:7],sgBPost[5,2:7],sgCPost[5,2:7]),beside=T,main="Q42: Post Intervention",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgAPost[9,2:7],sgBPost[9,2:7],sgCPost[9,2:7]),beside=T,main="Q46R*: Post Intervention",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[5,2:7],sgBDiff[5,2:7],sgCDiff[5,2:7]),beside=T,main="Q42: Pre to post difference",xlab="Teacher response",ylab="Frequency")
+barplot(rbind(sgADiff[9,2:7],sgBDiff[9,2:7],sgCDiff[9,2:7]),beside=T,main="Q46R*: Pre to post difference", xlab="Teacher response",ylab="Frequency")
+
+
+sgBDiff[5,6]/sd(shifts)
+sgCDiff[5,6]/sd(shifts)
+
+```
+
+
